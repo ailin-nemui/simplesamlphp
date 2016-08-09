@@ -211,7 +211,7 @@ if (array_key_exists('negotiate:authId', $state)) {
         } elseif ($session_disabled) {
             $retryState = SimpleSAML_Auth_State::cloneState($state);
             unset($retryState[SimpleSAML_Auth_State::ID]);
-            $nego_retry = SimpleSAML_Auth_State::saveState($retryState, 'sspmod_negotiate_Auth_Source_Negotiate.StageId');
+            $nego_retry = SimpleSAML_Auth_State::saveState($retryState, 'sspmod_negotiateext_Auth_Source_Negotiate.StageId');
             $nego_session = TRUE;
         }
     }
@@ -247,7 +247,7 @@ security check in SSP's state handling library. If you omit this and
 pass on the original state you will see a warning in the log like
 this:
 
-    Sep 27 13:47:36 simplesamlphp WARNING [b99e6131ee] Wrong stage in state. Was 'foo', should be 'sspmod_negotiate_Auth_Source_Negotiate.StageId'.
+    Sep 27 13:47:36 simplesamlphp WARNING [b99e6131ee] Wrong stage in state. Was 'foo', should be 'sspmod_negotiateext_Auth_Source_Negotiate.StageId'.
 
 It will work as loadState will take controll and call
 Negotiate->authenticate() but remaining code in retry.php will be

@@ -7,11 +7,11 @@
  * @author Mathias Meisfjordskar, University of Oslo <mathias.meisfjordskar@usit.uio.no>
  * @package SimpleSAMLphp
  */
-class sspmod_negotiate_Auth_Source_Negotiate extends SimpleSAML_Auth_Source
+class sspmod_negotiateext_Auth_Source_Negotiate extends SimpleSAML_Auth_Source
 {
 
     // Constants used in the module
-    const STAGEID = 'sspmod_negotiate_Auth_Source_Negotiate.StageId';
+    const STAGEID = 'sspmod_negotiateext_Auth_Source_Negotiate.StageId';
 
     protected $ldap = null;
     protected $backend = '';
