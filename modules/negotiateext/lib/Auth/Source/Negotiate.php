@@ -21,7 +21,6 @@ class sspmod_negotiateext_Auth_Source_Negotiate extends SimpleSAML_Auth_Source
     protected $enableTLS = false;
     protected $debugLDAP = false;
     protected $timeout = 30;
-    protected $keytab = '';
     protected $base = array();
     protected $attr = 'uid';
     protected $subnet = null;
@@ -36,16 +35,12 @@ class sspmod_negotiateext_Auth_Source_Negotiate extends SimpleSAML_Auth_Source
      * @param array $info Information about this authentication source.
      * @param array $config The configuration of the module
      *
-     * @throws Exception If the KRB5 extension is not installed or active.
+
      */
     public function __construct($info, $config)
     {
         assert('is_array($info)');
         assert('is_array($config)');
-
-        if (!extension_loaded('krb5')) {
-            throw new Exception('KRB5 Extension not installed');
-        }
 
         // call the parent constructor first, as required by the interface
         parent::__construct($info, $config);
@@ -59,7 +54,6 @@ class sspmod_negotiateext_Auth_Source_Negotiate extends SimpleSAML_Auth_Source
         $this->enableTLS = $config->getBoolean('enable_tls', false);
         $this->debugLDAP = $config->getBoolean('debugLDAP', false);
         $this->timeout = $config->getInteger('timeout', 30);
-        $this->keytab = $config->getString('keytab');
         $this->base = $config->getArrayizeString('base');
         $this->attr = $config->getString('attr', 'uid');
         $this->subnet = $config->getArray('subnet', null);
@@ -101,6 +95,8 @@ class sspmod_negotiateext_Auth_Source_Negotiate extends SimpleSAML_Auth_Source
         $disabled = $session->getData('negotiate:disable', 'session');
 
         if ($disabled ||
+	    (!empty($_REQUEST['negotiateext_auth']) &&
+	        $_REQUEST['negotiateext_auth'] == 'false') ||
             (!empty($_COOKIE['NEGOTIATE_AUTOLOGIN_DISABLE_PERMANENT']) &&
                 $_COOKIE['NEGOTIATE_AUTOLOGIN_DISABLE_PERMANENT'] == 'True')
         ) {
@@ -116,73 +112,15 @@ class sspmod_negotiateext_Auth_Source_Negotiate extends SimpleSAML_Auth_Source
             assert('FALSE');
         }
 
-        SimpleSAML\Logger::debug('Negotiate - authenticate(): looking for Negotiate');
-        if (!empty($_SERVER['HTTP_AUTHORIZATION'])) {
-            SimpleSAML\Logger::debug('Negotiate - authenticate(): Negotiate found');
-            $this->ldap = new SimpleSAML_Auth_LDAP(
-                $this->hostname,
-                $this->enableTLS,
-                $this->debugLDAP,
-                $this->timeout,
-                $this->port,
-                $this->referrals
-            );
+        // No auth token. Send it.
+        SimpleSAML\Logger::debug('Negotiate - authenticate(): Sending Negotiate.');
+        // Save the $state array, so that we can restore if after a redirect
+        SimpleSAML\Logger::debug('Negotiate - fallback: '.$state['LogoutState']['negotiate:backend']);
+        $id = SimpleSAML_Auth_State::saveState($state, self::STAGEID);
+        $params = array('AuthState' => $id);
 
-            list($mech, $data) = explode(' ', $_SERVER['HTTP_AUTHORIZATION'], 2);
-            if (strtolower($mech) == 'basic') {
-                SimpleSAML\Logger::debug('Negotiate - authenticate(): Basic found. Skipping.');
-            } else {
-                if (strtolower($mech) != 'negotiate') {
-                    SimpleSAML\Logger::debug('Negotiate - authenticate(): No "Negotiate" found. Skipping.');
-                }
-            }
-
-            $auth = new KRB5NegotiateAuth($this->keytab);
-            // attempt Kerberos authentication
-            try {
-                $reply = $auth->doAuthentication();
-            } catch (Exception $e) {
-                SimpleSAML\Logger::error('Negotiate - authenticate(): doAuthentication() exception: '.$e->getMessage());
-                $reply = null;
-            }
-
-            if ($reply) {
-                // success! krb TGS received
-                $user = $auth->getAuthenticatedUser();
-                SimpleSAML\Logger::info('Negotiate - authenticate(): '.$user.' authenticated.');
-                $lookup = $this->lookupUserData($user);
-                if ($lookup !== null) {
-                    $state['Attributes'] = $lookup;
-                    // Override the backend so logout will know what to look for
-                    $state['LogoutState'] = array(
-                        'negotiate:backend' => null,
-                    );
-                    SimpleSAML\Logger::info('Negotiate - authenticate(): '.$user.' authorized.');
-                    SimpleSAML_Auth_Source::completeAuth($state);
-                    // Never reached.
-                    assert('FALSE');
-                }
-            } else {
-                // Some error in the recieved ticket. Expired?
-                SimpleSAML\Logger::info('Negotiate - authenticate(): Kerberos authN failed. Skipping.');
-            }
-        } else {
-            // No auth token. Send it.
-            SimpleSAML\Logger::debug('Negotiate - authenticate(): Sending Negotiate.');
-            // Save the $state array, so that we can restore if after a redirect
-            SimpleSAML\Logger::debug('Negotiate - fallback: '.$state['LogoutState']['negotiate:backend']);
-            $id = SimpleSAML_Auth_State::saveState($state, self::STAGEID);
-            $params = array('AuthState' => $id);
-
-            $this->sendNegotiate($params);
-            exit;
-        }
-
-        SimpleSAML\Logger::info('Negotiate - authenticate(): Client failed Negotiate. Falling back');
-        $this->fallBack($state);
-        /* The previous function never returns, so this code is never
-           executed */
-        assert('FALSE');
+        $this->sendNegotiate($params);
+        exit;
     }
 
 
@@ -237,22 +175,8 @@ class sspmod_negotiateext_Auth_Source_Negotiate extends SimpleSAML_Auth_Source
      */
     protected function sendNegotiate($params)
     {
-        $url = htmlspecialchars(SimpleSAML\Module::getModuleURL('negotiate/backend.php', $params));
-        $json_url = json_encode($url);
-
-        header('HTTP/1.1 401 Unauthorized');
-        header('WWW-Authenticate: Negotiate', false);
-        echo <<<EOF
-<html>
- <head>
-  <script type="text/javascript">window.location = $json_url</script>
-  <title>Redirect to login</title>
- </head>
-<body>
- <p>Your browser seems to have Javascript disabled. Please click <a href="$url">here</a>.</p>
-</body>
-</html>
-EOF;
+	$authPage = SimpleSAML_Module::getModuleURL('negotiateext/auth.php');
+	\SimpleSAML\Utils\HTTP::redirectTrustedURL($authPage, $params);
     }
 
 
@@ -270,8 +194,9 @@ EOF;
         $authId = $state['LogoutState']['negotiate:backend'];
 
         if ($authId === null) {
-            throw new SimpleSAML_Error_Error(500, "Unable to determine auth source.");
+            throw new SimpleSAML_Error_Exception("Unable to determine auth source.", 500);
         }
+        SimpleSAML\Logger::debug('Negotiate: fallBack to ' . $authId);
         $source = SimpleSAML_Auth_Source::getById($authId);
 
         try {
@@ -287,6 +212,89 @@ EOF;
         self::loginCompleted($state);
     }
 
+    public function externalAuth(&$state)
+    {
+        SimpleSAML\Logger::debug('Negotiate - authenticate(): remote user found');
+        $this->ldap = new SimpleSAML_Auth_LDAP(
+            $this->hostname,
+            $this->enableTLS,
+            $this->debugLDAP,
+            $this->timeout,
+            $this->port,
+            $this->referrals
+        );
+
+        $user = $_SERVER['REMOTE_USER'];
+        SimpleSAML\Logger::info('Negotiate - authenticate(): '.$user.' authenticated.');
+        $lookup = $this->lookupUserData($user);
+        if ($lookup) {
+            $state['Attributes'] = $lookup;
+            // Override the backend so logout will know what to look for
+            $state['LogoutState'] = array(
+                'negotiate:backend' => null,
+            );
+            SimpleSAML\Logger::info('Negotiate - authenticate(): '.$user.' authorized.');
+            SimpleSAML_Auth_Source::completeAuth($state);
+            // Never reached.
+            assert('FALSE');
+        }
+    }
+
+    /**
+     * Passes control of the login process to a different module.
+     *
+     * @param string $state Information about the current authentication.
+     *
+     * @throws SimpleSAML_Error_BadRequest If couldn't determine the auth source.
+     * @throws SimpleSAML_Error_NoState
+     * @throws SimpleSAML_Error_Exception
+     */
+    public static function external() {
+	if (!isset($_REQUEST['AuthState'])) {
+		throw new SimpleSAML_Error_BadRequest('Missing "AuthState" parameter.');
+	}
+
+	SimpleSAML\Logger::debug('Negotiate: external returned');
+	$sid = SimpleSAML_Auth_State::parseStateID($_REQUEST['AuthState']);
+
+	$state = SimpleSAML_Auth_State::loadState($_REQUEST['AuthState'], sspmod_negotiateext_Auth_Source_Negotiate::STAGEID, TRUE);
+	if ($state === NULL) {
+		if ($sid['url'] === NULL) {
+			throw new SimpleSAML_Error_NoState();
+		}
+
+		\SimpleSAML\Utils\HTTP::redirectUntrustedURL($sid['url'], array('negotiateext.auth' => 'false'));
+		assert('FALSE');
+	}
+
+
+        if (!empty($_SERVER['REMOTE_USER'])) {
+	        $source = SimpleSAML_Auth_Source::getById($state['negotiate:authId']);
+
+		if ($source === NULL) {
+			/*
+			 * The only way this should fail is if we remove or rename the authentication source
+			 * while the user is at the login page.
+			 */
+			throw new SimpleSAML_Error_Exception('Could not find authentication source with id ' . $state['negotiate:authId']);
+		}
+
+		/*
+		 * Make sure that we haven't switched the source type while the
+		 * user was at the authentication page. This can only happen if we
+		 * change config/authsources.php while an user is logging in.
+		 */
+		if (! ($source instanceof self)) {
+			throw new SimpleSAML_Error_Exception('Authentication source type changed.');
+		}
+
+	        SimpleSAML\Logger::debug('Negotiate - authenticate(): looking for Negotate');
+		$source->externalAuth($state);
+        }
+
+	self::fallBack($state);
+	assert('FALSE');
+    }
 
     /**
      * Strips away the realm of the Kerberos identifier, looks up what attributes to fetch from SP metadata and
@@ -355,7 +363,7 @@ EOF;
 
         if ($authId === null) {
             $session = SimpleSAML_Session::getSessionFromRequest();
-            $session->setData('negotiate:disable', 'session', true, 24 * 60 * 60);
+            $session->setData('negotiate:disable', 'session', true, 0);
             parent::logout($state);
         } else {
             $source = SimpleSAML_Auth_Source::getById($authId);
