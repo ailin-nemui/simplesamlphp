@@ -1,15 +1,18 @@
-Negotiate module
-================
+Negotiate-Ext module
+====================
 
-The Negotiate module implements Microsofts Kerberos SPNEGO mechanism.
-It is intended to only support Kerberos and not NTLM which RFC4559
-implements.
+The Negotiate-Ext module implements external authentication mechanism.
+It is intended to support Kerberos SPNEGO or other GSSAPI by
+leveraging Apache modules. In fact it can work with any Apache
+authentication source providing REMOTE_USER.
 
-`negotiate:Negotiate`
-: Authenticates users via HTTP authentication
+It is based on the Negotiate module but does not require php-krb5.
 
-`negotiate:Negotiate`
----------------------
+negotiateext:Negotiate
+:     Authenticates users via HTTP authentication
+
+negotiateext:Negotiate
+----------------------
 
 Negotiate implements the following mechanics:
 
@@ -17,12 +20,12 @@ Negotiate implements the following mechanics:
  * Authorize user against a LDAP directory
  * Collect metadata from LDAP directory
  * Fall back to other SimpleSamlPhp module for any client/user that
-   fails to authenticate in the Negotiate module
+   fails to authenticate in the Negotiate-Ext module
  * Check only clients from a certain subnet
  * Supports enabling/disabling a client
 
-In effect this module aims to extend the Microsoft AD SSO session to
-the SAML IdP. (Or any other Kerberos domain) It doesn't work like this
+In effect this module aims to extend the Microsoft AD or FreeIPA
+Kerberos SSO session to the SAML IdP. It doesn't work like this
 of course but for the user the client is automatically authenticated
 when an SP sends the client to the IdP. In reality Negotiate
 authenticates the user via SPNEGO and issues a separate SAML session.
@@ -46,16 +49,16 @@ browser will prompt the user for u/p in a popup box that will always
 fail. Only when the user clicks cancel the proper login process will
 continue. This is handled through the body of the 401 message the
 client recieves with the Negotiate request. In the body a URL to the
-fallback mechanism is supplied and Javascript is used to redirect the
+fallback mechanism is supplied and meta-refresh is used to redirect the
 client.
 
 All configuration is handled in authsources.php:
 
      'weblogin' => array(
-             'negotiate:Negotiate',
-             'keytab' => '/path/to/keytab-file',
+             'negotiateext:Negotiate',
              'fallback' => 'ldap',
              'hostname' => 'ldap.example.com',
+             'enable_tls' => TRUE,
              'base' => 'cn=people,dc=example,dc=com',
              'adminUser' => 'cn=idp-fallback,cn=services,dc=example,dc=com',
              'adminPassword' => 'VerySecretPassphraseHush'
@@ -64,90 +67,59 @@ All configuration is handled in authsources.php:
              'ldap:LDAP',
              'hostname' => 'ldap.example.com',
              'enable_tls' => TRUE,
+             'timeout' => 10,
              'dnpattern' => 'uid=%username%,cn=people,dc=example,dc=com',
              'search.enable' => FALSE
      ),
 
 
 
-`php_krb5`
-++++++++++
+Authentication handling
+-----------------------
 
-The processing involving the actual Kerberos ticket handling is done
-by php_krb5. The package is not yet labeled stable but has worked well
-during testing.
+The processing involving the actual Authentication handling is done
+by the web server. For Apache httpd, you can freely use `mod_auth_kerb` or
+`mod_auth_gssapi`. 
 
-NOTE! php_krb5 hardcodes the service name in the keytab file to 'HTTP'
-as of php_krb5-1.0rc2. To change this you need to edit the module code.
-Be wary of how much space is allocated to the string in
-negotiate_auth.c:101.
+You **must** configure protection on the `auth.php` script properly as
+follows: (Example for `mod_auth_kerb`)
 
-Depending on you apache config you may need a rewrite rule to allow
-php_krb5 to read the HTTP_AUTHORIZATION header:
+    <LocationMatch /negotiateext/auth.php>
+        AuthType KerberosV5
+        KrbMethodK5Passwd off
+        KrbMethodK4Passwd off
 
-     RewriteEngine on
-     RewriteCond %{HTTP:Authorization}  !^$
-     RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization},L]
+        Krb5Keytab /etc/httpd.keytab
+        AuthName "Kerberos SSO"
+        Require valid-user
+        ErrorDocument 401 /module.php/negotiateext/error.php
+    </LocationMatch>
 
+Note that you need to adjust the path to the ErrorDocument according
+to the base of your SimpleSAMLphp installation.
 
-Test the Kerberos setup with the following script:
-
-     <?php
-     if(!extension_loaded('krb5')) {
-             die('KRB5 Extension not installed');
-     }
-
-     if(!empty($_SERVER['HTTP_AUTHORIZATION'])) {
-            list($mech, $data) = explode(' ', $_SERVER['HTTP_AUTHORIZATION']);
-             if(strtolower($mech) == 'basic') {
-                     echo "Client sent basic";
-                     die('Unsupported request');
-             } else if(strtolower($mech) != 'negotiate') {
-                     echo "Couldn't find negotiate";
-                     die('Unsupported request');
-             }
-             $auth = new KRB5NegotiateAuth('/path/to/keytab');
-             $reply = '';
-             if($reply = $auth->doAuthentication()) {
-                     header('HTTP/1.1 200 Success');
-                     echo 'Success - authenticated as ' . $auth->getAuthenticatedUser() . '<br>';
-             } else {
-                     echo 'Failed to authN.';
-                     die();
-             }
-     } else {
-             header('HTTP/1.1 401 Unauthorized');
-             header('WWW-Authenticate: Negotiate',false);
-             echo 'Not authenticated. No HTTP_AUTHORIZATION available.';
-             echo 'Check headers sent by the browser and verify that ';
-             echo 'apache passes them to PHP';
-     }
-     ?>
-
-
-
-`LDAP`
-++++++
+LDAP
+----
 
 LDAP is used to verify the user due to the lack of metadata in
 Kerberos. A domain can contain lots of kiosk users, non-personal
 accounts and the likes. The LDAP lookup will authorize and fetch
-attributes as defined by SimpleSamlPhp metadata.
+attributes as defined by SimpleSAMLphp metadata.
 
-'hostname', 'enable_tls', 'debugLDAP', 'timeout' and 'base' are
+`hostname`, `enable_tls`, `debugLDAP`, `timeout` and `base` are
 self-explanatory. Read the documentation of the LDAP auth module for
-more information. 'attr' is the attribute that will be used to look up
+more information. `attr` is the attribute that will be used to look up
 user objects in the directory after extracting it from the Kerberos
-session. Default is 'uid'.
+session. Default is `uid`.
 
 For LDAP directories with restricted access to objects or attributes
-Negotiate implements 'adminUser' and 'adminPassword'. adminUser must
+Negotiate implements `adminUser` and `adminPassword`. adminUser must
 be a DN to an object with access to search for all relevant user
 objects and to look up attributes needed by the SP.
 
 
-`Subnet filtering`
-++++++++++++++++++
+Subnet filtering
+----------------
 
 Subnet is meant to filter which clients you subject to the
 WWW-Authenticate request.
@@ -167,8 +139,8 @@ currently in the domain should be the only ones that are promted with
 WWW-Authenticate: Negotiate.
 
 
-`Enabling/disabling Negotiate from a web browser`
-+++++++++++++++++++++++++++++++++++++++++++++++++
+Enabling/disabling Negotiate from a web browser
+-----------------------------------------------
 
 Included in Negotiate are semi-static web pages for enabling and
 disabling Negotiate for any given client. The pages simple set/deletes
@@ -177,8 +149,8 @@ The help text in the JSON files should be locally overwritten to fully
 explain which clients are accepted by Negotiate.
 
 
-`Logout/Login loop and reauthenticating`
-++++++++++++++++++++++++++++++++++++++++
+Logout/Login loop and reauthenticating
+--------------------------------------
 
 Due to the automatic AuthN of certain clients and how SPs will
 automatically redirect clients to the IdP when clients try to access
@@ -195,43 +167,54 @@ box of information to the user explaining what's happening.
 One can add this bit of code to the template in the fallback AuthN
 module:
 
-// This should be placed in your www script
-$nego_session = FALSE;
-$nego_perm = FALSE;
-$nego_retry = NULL;
-if (array_key_exists('negotiate:authId', $state)) {
-    $nego = SimpleSAML_Auth_Source::getById($state['negotiate:authId']);
-    $mask = $nego->checkMask();
-    $disabled = $nego->spDisabledInMetadata($spMetadata);
-    $session_disabled = $session->getData('negotiate:disable', 'session');
-    if ($mask and !$disabled) {
-        if(array_key_exists('NEGOTIATE_AUTOLOGIN_DISABLE_PERMANENT', $_COOKIE) &&
-           $_COOKIE['NEGOTIATE_AUTOLOGIN_DISABLE_PERMANENT'] == 'True') {
-            $nego_perm = TRUE;
-        } elseif ($session_disabled) {
-            $retryState = SimpleSAML_Auth_State::cloneState($state);
-            unset($retryState[SimpleSAML_Auth_State::ID]);
-            $nego_retry = SimpleSAML_Auth_State::saveState($retryState, 'sspmod_negotiateext_Auth_Source_Negotiate.StageId');
-            $nego_session = TRUE;
+    // This should be placed in your www script modules/core/www/loginuserpass.php
+
+    $nego_perm = FALSE;
+    $nego_retry = NULL;
+    if (is_array($state) && array_key_exists('negotiate:authId', $state)) {
+        $nego = SimpleSAML_Auth_Source::getById($state['negotiate:authId']);
+        $mask = $nego->checkMask();
+        $disabled = $nego->spDisabledInMetadata($spMetadata);
+        $session = SimpleSAML_Session::getSessionFromRequest();
+        $session_disabled = $session && $session->getData('negotiate:disable', 'session');
+        if ($mask and !$disabled) {
+            if(array_key_exists('NEGOTIATE_AUTOLOGIN_DISABLE_PERMANENT', $_COOKIE) &&
+               $_COOKIE['NEGOTIATE_AUTOLOGIN_DISABLE_PERMANENT'] == 'True') {
+                $nego_perm = TRUE;
+            } else {
+                $retryState = SimpleSAML_Auth_State::cloneState($state);
+                unset($retryState[SimpleSAML_Auth_State::ID]);
+                $nego_retry = SimpleSAML_Auth_State::saveState($retryState, 'sspmod_negotiateext_Auth_Source_Negotiate.StageId');
+                $nego_session = TRUE;
+            }
         }
     }
-}
+    $t->data['nego'] = array (
+        'disable_perm' => $nego_perm,
+        'retry_id'     => $nego_retry,
+    );
 
-// This should reside in your template
-if($this->data['nego']['disable_perm']) {
-    echo '<span id="login-extra-info-uio.no" class="login-extra-info">'
-          . '<span class="login-extra-info-divider"></span>'
-          . $this->t('{feide:login:login_uio_negotiate_disabled_permanent_info}')
-          . '</span>';
-} elseif($this->data['nego']['disable_session']) {
-     echo '<span id="login-extra-info-uio.no" class="login-extra-info">'
-          . '<span class="login-extra-info-divider"></span>'
-          . $this->t('{feide:login:login_uio_negotiate_disabled_session_info}')
-          . '<br><a href="'.SimpleSAML\Module::getModuleURL('negotiate/retry.php', array('AuthState' => $this->data['nego']['retry_id'])).'">'
-          . $this->t('{feide:login:login_uio_negotiate_disabled_session_info_link}')
-          . '</a>'
-          . '</span>';
-}
+-
+
+    // This should reside in your template modules/core/templates/loginuserpass.php
+
+    <?php
+    if($this->data['nego']['disable_perm']) {
+        echo '<span id="login-extra-info-uio.no" class="login-extra-info">'
+              . '<span class="login-extra-info-divider"></span>'
+              . $this->t('{negotiate:negotiate:disabled_info}')
+              . '</span>';
+    } elseif($this->data['nego']['retry_id']) {
+         echo '<span id="login-extra-info-uio.no" class="login-extra-info">'
+              . '<span class="login-extra-info-divider"></span>'
+              . $this->t('{negotiate:negotiate:failed_info}')
+              . ' <a class="btn" href="'.SimpleSAML_Module::getModuleURL('negotiateext/retry.php', array('AuthState' => $this->data['nego']['retry_id'])).'">'
+              . $this->t('{negotiate:negotiate:retry_link}')
+              . '</a>'
+              . '</span>';
+    }
+    ?>
+
 
 The above may or may not work right out of the box for you but it is
 the gist of it. By looking at the state variable, cookie and checking
@@ -254,8 +237,8 @@ Negotiate->authenticate() but remaining code in retry.php will be
 discarded. Other side-effects may occur.
 
 
-`Clients`
-+++++++++
+Clients
+-------
 
 * Internet Explorer
 
@@ -276,4 +259,9 @@ TODO
 
 * Chrome
 
-TODO
+Chrome on Linux: Create a file /etc/opt/chrome/policies/managed/company_policy.json
+with the following content:
+
+    {"AuthServerWhitelist":"your.idp.host"}
+
+Chrome on OSX: Configure AuthServerWhitelist using Apple Workgroup Manager as detailed on https://www.chromium.org/administrators/mac-quick-start 
